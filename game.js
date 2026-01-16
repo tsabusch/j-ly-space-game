@@ -233,3 +233,124 @@ class MainScene extends Phaser.Scene {
   }
 
   cycleTarget(dir) {
+    const candidates = this.obstacles.filter(o => !o.resolved);
+    if (candidates.length === 0) {
+      this.lockedTarget = null;
+      return;
+    }
+    const currentIndex = candidates.indexOf(this.lockedTarget);
+    if (currentIndex === -1) {
+      this.lockedTarget = candidates[0];
+      return;
+    }
+    const nextIndex = (currentIndex + dir + candidates.length) % candidates.length;
+    this.lockedTarget = candidates[nextIndex];
+  }
+
+  shoot(weapon) {
+    this.lastWeapon = weapon;
+    this.refreshTargetLock();
+    const target = this.lockedTarget;
+
+    const startX = this.player.x;
+    const startY = this.player.y - 8;
+    const speed = 520;
+    let vx = 0;
+    let vy = -speed;
+
+    if (target) {
+      const dx = target.x - startX;
+      const dy = target.y - startY;
+      const len = Math.hypot(dx, dy) || 1;
+      vx = (dx / len) * speed;
+      vy = (dy / len) * speed;
+    }
+
+    const color = weapon === "j" ? 0x7bf2ff : 0xffd66e;
+    const sprite = this.add.circle(startX, startY, 4, color, 0.95);
+    this.bullets.push({
+      x: startX,
+      y: startY,
+      vx,
+      vy,
+      weapon,
+      life: 900,
+      sprite,
+    });
+  }
+
+  drawAim() {
+    const g = this.ui.aim;
+    g.clear();
+
+    for (const o of this.obstacles) {
+      o.ring.setAlpha(0.18);
+      o.glow.setAlpha(0.10);
+    }
+
+    if (!this.lockedTarget || this.lockedTarget.resolved) return;
+
+    g.lineStyle(1.5, 0x87b8ff, 0.5);
+    g.beginPath();
+    g.moveTo(this.player.x, this.player.y - 10);
+    g.lineTo(this.lockedTarget.x, this.lockedTarget.y);
+    g.strokePath();
+
+    this.lockedTarget.ring.setAlpha(0.5);
+    this.lockedTarget.glow.setAlpha(0.2);
+  }
+
+  checkHits() {
+    for (const b of this.bullets) {
+      for (const o of this.obstacles) {
+        if (o.resolved) continue;
+        const dx = b.x - o.x;
+        const dy = b.y - o.y;
+        if (Math.hypot(dx, dy) < 28) {
+          b.life = 0;
+          b.sprite.destroy();
+          if (b.weapon === o.word.correct) {
+            this.resolve(o);
+          } else {
+            this.fail(o, "HIBA!");
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  resolve(o) {
+    if (o.resolved) return;
+    o.resolved = true;
+    o.container.destroy();
+    this.score += 1;
+    this.ui.score.setText(`Pont: ${this.score}`);
+  }
+
+  fail(o, _reason) {
+    if (o.resolved) return;
+    o.resolved = true;
+    o.container.destroy();
+    this.lives = Math.max(0, this.lives - 1);
+    this.ui.lives.setText(`Élet: ${"♥".repeat(this.lives)}`);
+    if (this.lives <= 0) {
+      this.scene.restart();
+    }
+  }
+}
+
+const config = {
+  type: Phaser.AUTO,
+  parent: "game",
+  width: 900,
+  height: 600,
+  scene: [MainScene],
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH,
+  },
+  backgroundColor: "#070b16",
+};
+
+new Phaser.Game(config);
