@@ -106,8 +106,8 @@
     x: W / 2,
     y: H - 62,
     vx: 0,
-    speed: 820,      // acceleration feel
-    drag: 0.86,
+    speed: 1640,      // acceleration feel
+    drag: 0.9,
     radius: 18,
     cooldown: 0,
     lastWeapon: "j",
@@ -261,7 +261,7 @@
     // Drag the ship (simple)
     const dx = px - player.x;
     const dy = py - player.y;
-    if (dx*dx + dy*dy <= (48*48)) {
+    if (dx*dx + dy*dy <= (64*64)) {
       dragging = true;
       dragOffsetX = px - player.x;
       canvas.setPointerCapture(e.pointerId);
