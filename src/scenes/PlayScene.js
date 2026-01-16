@@ -4,13 +4,14 @@ export default class PlayScene extends Phaser.Scene {
   constructor() {
     super('play');
     this.speed = 420;
+    this.slotSymbol = '⚡';
   }
 
   create() {
     const { height, width } = this.scale;
 
     this.add
-      .text(width / 2, 24, 'Infinite Runner', {
+      .text(width / 2, 24, 'J/LY Runner', {
         fontSize: '24px',
         color: '#e2e8f0'
       })
@@ -22,6 +23,22 @@ export default class PlayScene extends Phaser.Scene {
         color: '#e2e8f0'
       })
       .setOrigin(1, 0);
+
+    this.score = 0;
+    this.scoreText = this.add
+      .text(24, 24, 'Score: 0', {
+        fontSize: '20px',
+        color: '#f8fafc'
+      })
+      .setOrigin(0, 0);
+
+    this.shields = 3;
+    this.shieldText = this.add
+      .text(24, 52, 'Shields: ♥♥♥', {
+        fontSize: '18px',
+        color: '#fca5a5'
+      })
+      .setOrigin(0, 0);
 
     this.ground = this.add
       .tileSprite(0, height - 48, width, 48, 'ground')
@@ -47,14 +64,13 @@ export default class PlayScene extends Phaser.Scene {
     });
 
     this.physics.add.collider(this.player, this.groundCollider);
-    this.physics.add.collider(this.player, this.obstacles, this.handleHit, undefined, this);
 
-    this.inputKeys = this.input.keyboard.addKeys({
-      jump: Phaser.Input.Keyboard.KeyCodes.SPACE
-    });
-
-    this.input.on('pointerdown', () => {
-      this.tryJump();
+    this.input.keyboard.on('keydown-J', () => this.fireChoice('j'));
+    this.input.keyboard.on('keydown-L', () => this.fireChoice('ly'));
+    this.input.keyboard.on('keydown-SPACE', () => {
+      if (this.lastChoice) {
+        this.fireChoice(this.lastChoice);
+      }
     });
 
     this.spawnTimer = this.time.addEvent({
@@ -73,6 +89,18 @@ export default class PlayScene extends Phaser.Scene {
 
     this.distance = 0;
     this.isGameOver = false;
+    this.lastChoice = null;
+    this.targetedObstacle = null;
+    this.wordBank = [
+      { word: 'enjoy', choice: 'j' },
+      { word: 'jolly', choice: 'j' },
+      { word: 'jinx', choice: 'j' },
+      { word: 'jam', choice: 'j' },
+      { word: 'slowly', choice: 'ly' },
+      { word: 'brightly', choice: 'ly' },
+      { word: 'calmly', choice: 'ly' },
+      { word: 'lovely', choice: 'ly' }
+    ];
   }
 
   update(_time, delta) {
@@ -82,15 +110,19 @@ export default class PlayScene extends Phaser.Scene {
 
     this.ground.tilePositionX += (this.speed * delta) / 1000;
 
-    if (this.inputKeys.jump.isDown) {
-      this.tryJump();
-    }
-
     this.distance += (this.speed * delta) / 1000;
     this.distanceText.setText(`${Math.floor(this.distance)} m`);
 
+    this.updateTargetLock();
+
     this.obstacles.getChildren().forEach((obstacle) => {
+      if (obstacle.label) {
+        obstacle.label.setPosition(obstacle.x, obstacle.y - 42);
+      }
       if (obstacle.x < -obstacle.width) {
+        if (obstacle.label) {
+          obstacle.label.destroy();
+        }
         obstacle.destroy();
       }
     });
@@ -102,20 +134,25 @@ export default class PlayScene extends Phaser.Scene {
     });
   }
 
-  tryJump() {
-    if (this.player.body.blocked.down) {
-      this.player.setVelocityY(-640);
-    }
-  }
-
   spawnObstacle() {
     if (this.isGameOver) {
       return;
     }
 
     const y = this.scale.height - 72;
+    const wordData = Phaser.Utils.Array.GetRandom(this.wordBank);
+    const maskedWord = this.getMaskedWord(wordData.word, wordData.choice);
     const obstacle = this.obstacles.create(this.scale.width + 40, y, 'obstacle');
     obstacle.setVelocityX(-this.speed);
+    obstacle.wordData = wordData;
+    obstacle.label = this.add
+      .text(obstacle.x, obstacle.y - 42, maskedWord, {
+        fontSize: '20px',
+        color: '#f8fafc',
+        backgroundColor: '#0f172a',
+        padding: { x: 6, y: 2 }
+      })
+      .setOrigin(0.5);
   }
 
   spawnCloud() {
@@ -131,6 +168,156 @@ export default class PlayScene extends Phaser.Scene {
     cloud.update = (time, delta) => {
       cloud.x -= (cloud.speed * delta) / 1000;
     };
+  }
+
+  getMaskedWord(word, choice) {
+    return word.replace(choice, this.slotSymbol);
+  }
+
+  updateTargetLock() {
+    const obstacles = this.obstacles.getChildren().filter((obstacle) => obstacle.active);
+    if (obstacles.length === 0) {
+      this.clearTarget();
+      return;
+    }
+
+    let closest = obstacles[0];
+    obstacles.forEach((obstacle) => {
+      if (obstacle.x < closest.x) {
+        closest = obstacle;
+      }
+    });
+
+    if (this.targetedObstacle !== closest) {
+      this.clearTarget();
+      this.targetedObstacle = closest;
+      this.targetedObstacle.setTint(0x38bdf8);
+      if (this.targetedObstacle.label) {
+        this.targetedObstacle.label.setColor('#bae6fd');
+      }
+    }
+  }
+
+  clearTarget() {
+    if (this.targetedObstacle && this.targetedObstacle.active) {
+      this.targetedObstacle.clearTint();
+      if (this.targetedObstacle.label) {
+        this.targetedObstacle.label.setColor('#f8fafc');
+      }
+    }
+    this.targetedObstacle = null;
+  }
+
+  fireChoice(choice) {
+    if (this.isGameOver) {
+      return;
+    }
+
+    const target = this.targetedObstacle || this.getNearestObstacle();
+    if (!target) {
+      return;
+    }
+
+    this.lastChoice = choice;
+
+    const shotLabel = this.add
+      .text(this.player.x + 20, this.player.y - 20, choice.toUpperCase(), {
+        fontSize: '18px',
+        color: '#f8fafc',
+        backgroundColor: '#1d4ed8',
+        padding: { x: 4, y: 2 }
+      })
+      .setOrigin(0.5);
+
+    this.tweens.add({
+      targets: shotLabel,
+      x: target.x,
+      y: target.y - 40,
+      duration: 220,
+      onComplete: () => {
+        shotLabel.destroy();
+        this.resolveShot(target, choice);
+      }
+    });
+  }
+
+  getNearestObstacle() {
+    const obstacles = this.obstacles.getChildren().filter((obstacle) => obstacle.active);
+    if (obstacles.length === 0) {
+      return null;
+    }
+
+    return obstacles.reduce((closest, obstacle) => (obstacle.x < closest.x ? obstacle : closest));
+  }
+
+  resolveShot(target, choice) {
+    if (!target.active || !target.wordData) {
+      return;
+    }
+
+    if (choice === target.wordData.choice) {
+      this.score += 10;
+      this.scoreText.setText(`Score: ${this.score}`);
+      this.playSuccessEffect(target);
+      if (target.label) {
+        target.label.setText(target.wordData.word);
+        target.label.setColor('#86efac');
+      }
+      this.time.delayedCall(600, () => {
+        if (target.label) {
+          target.label.destroy();
+        }
+        target.destroy();
+        if (this.targetedObstacle === target) {
+          this.targetedObstacle = null;
+        }
+      });
+      return;
+    }
+
+    this.shields = Math.max(0, this.shields - 1);
+    this.updateShields();
+    this.showFeedback('Wrong choice');
+
+    if (this.shields <= 0) {
+      this.handleHit();
+    }
+  }
+
+  updateShields() {
+    const hearts = '♥'.repeat(this.shields);
+    const empty = '♡'.repeat(3 - this.shields);
+    this.shieldText.setText(`Shields: ${hearts}${empty}`);
+  }
+
+  showFeedback(message) {
+    const feedback = this.add
+      .text(this.scale.width / 2, 90, message, {
+        fontSize: '20px',
+        color: '#fda4af',
+        backgroundColor: '#1f2937',
+        padding: { x: 8, y: 4 }
+      })
+      .setOrigin(0.5);
+
+    this.tweens.add({
+      targets: feedback,
+      alpha: 0,
+      y: 70,
+      duration: 600,
+      onComplete: () => feedback.destroy()
+    });
+  }
+
+  playSuccessEffect(target) {
+    const burst = this.add.circle(target.x, target.y - 40, 18, 0x22d3ee, 0.9);
+    this.tweens.add({
+      targets: burst,
+      scale: 2,
+      alpha: 0,
+      duration: 350,
+      onComplete: () => burst.destroy()
+    });
   }
 
   handleHit() {
