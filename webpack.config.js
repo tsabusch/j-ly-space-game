@@ -29,7 +29,8 @@ module.exports = {
     new CleanWebpackPlugin(),
     new HtmlWebpackPlugin({
       template: './public/index.html',
-      inject: 'body'
+      inject: 'body',
+      baseHref: isProduction ? '/j-ly-space-game/' : '/'
     })
   ],
   devServer: {
