@@ -1,0 +1,730 @@
+<!doctype html>
+<html lang="hu">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Betűvadász – J vs LY (Modern Prototype)</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height: 100%; margin: 0; background: #070a14; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    .wrap { height: 100%; display: grid; place-items: center; padding: 10px; box-sizing: border-box; }
+    .panel { width: min(980px, 100%); }
+    canvas {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 920 / 560;
+      display: block;
+      background: radial-gradient(circle at 30% 20%, #1a2560 0%, #0b1020 55%, #060815 100%);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      touch-action: none;
+    }
+    .hint {
+      margin-top: 10px;
+      display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+      color: rgba(232,238,252,0.92);
+      font-size: 13px;
+    }
+    kbd { background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 6px; }
+    .pill { padding: 6px 10px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.07); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <canvas id="game" width="920" height="560" aria-label="Betűvadász játék"></canvas>
+    <div class="hint">
+      <div class="pill">Mozgás: <kbd>←</kbd> <kbd>→</kbd> | Lőj: <kbd>J</kbd> vagy <kbd>L</kbd> (LY)</div>
+      <div class="pill">Mobil: húzd az űrhajót, lőj a képernyő alján lévő gombokkal</div>
+      <div class="pill">Újraindítás: <kbd>R</kbd> | Szünet: <kbd>P</kbd></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+
+  const W = canvas.width, H = canvas.height;
+
+  // Word bank: only words where the missing chunk is exactly "j" or "ly" in one place.
+  // Mask uses "_" for that missing chunk.
+  const WORDS = [
+    // J
+    { full: "játék", missing: "j", masked: "_áték" },
+    { full: "jó", missing: "j", masked: "_ó" },
+    { full: "juh", missing: "j", masked: "_uh" },
+    { full: "jég", missing: "j", masked: "_ég" },
+    { full: "jár", missing: "j", masked: "_ár" },
+    { full: "jel", missing: "j", masked: "_el" },
+    { full: "jön", missing: "j", masked: "_ön" },
+    { full: "kaja", missing: "j", masked: "ka_a" },
+    { full: "fajta", missing: "j", masked: "fa_ta" },
+    { full: "hajó", missing: "j", masked: "ha_ó" },
+
+    // LY
+    { full: "lyuk", missing: "ly", masked: "_uk" },
+    { full: "golyó", missing: "ly", masked: "go_ó" },
+    { full: "hely", missing: "ly", masked: "he_" },
+    { full: "folyó", missing: "ly", masked: "fo_ó" },
+    { full: "pálya", missing: "ly", masked: "pá_a" },
+    { full: "gólya", missing: "ly", masked: "gó_a" },
+    { full: "pehely", missing: "ly", masked: "pehe_" },
+    { full: "súly", missing: "ly", masked: "sú_" },
+    { full: "olyan", missing: "ly", masked: "o_an" },
+    { full: "bólya", missing: "ly", masked: "bó_a" },
+  ];
+
+  // ---------- Utility ----------
+  const rand = (min, max) => Math.random() * (max - min) + min;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  // ---------- Game state ----------
+  let score = 0;
+  let lives = 3;
+  let time = 0;
+  let gameOver = false;
+  let paused = false;
+
+  // Difficulty ramps
+  let spawnInterval = 1200;  // ms
+  let baseSpeed = 70;        // px/s
+  let maxShips = 2;
+
+  // Adaptive: wrong words return
+  const retryQueue = [];
+
+  // Entities
+  const ships = [];
+  const bullets = [];
+  const particles = [];
+  const popups = [];
+
+  // Player
+  const player = {
+    x: W / 2,
+    y: H - 62,
+    vx: 0,
+    speed: 820,      // acceleration feel
+    drag: 0.86,
+    radius: 18,
+    cooldown: 0,
+    lastWeapon: "j",
+  };
+
+  // Input
+  const keys = { left: false, right: false };
+
+  function pickWord() {
+    if (retryQueue.length && Math.random() < 0.35) return retryQueue.shift();
+    return WORDS[Math.floor(Math.random() * WORDS.length)];
+  }
+
+  function spawnShip() {
+    if (ships.length >= maxShips) return;
+
+    const w = pickWord();
+    const x = rand(120, W - 120);
+    const y = -40;
+
+    ships.push({
+      x, y,
+      speed: baseSpeed * rand(0.95, 1.35),
+      radius: 28,
+      wobble: rand(0, Math.PI * 2),
+      word: w,
+      hp: 1,
+      isBoss: false,
+    });
+  }
+
+  function spawnBoss() {
+    // Simple boss: LY-only, 3 hits
+    const lyWords = WORDS.filter(w => w.missing === "ly");
+    const w = lyWords[Math.floor(Math.random() * lyWords.length)];
+
+    ships.length = 0;
+    bullets.length = 0;
+
+    ships.push({
+      x: W / 2, y: -80,
+      speed: baseSpeed * 0.85,
+      radius: 46,
+      wobble: 0,
+      word: w,
+      hp: 3,
+      isBoss: true,
+    });
+
+    popups.push({ t: 0, dur: 1.2, text: "BOSS: LY-LORD", sub: "Csak LY-os szavak!" });
+  }
+
+  function addParticles(x, y, intensity = 18) {
+    for (let i = 0; i < intensity; i++) {
+      const a = rand(0, Math.PI * 2);
+      const sp = rand(80, 420);
+      particles.push({
+        x, y,
+        vx: Math.cos(a) * sp,
+        vy: Math.sin(a) * sp,
+        r: rand(1.5, 3.6),
+        t: 0,
+        dur: rand(0.25, 0.7),
+        kind: Math.random() < 0.55 ? "warm" : "hot"
+      });
+    }
+  }
+
+  function addPopupWord(x, y, fullWord, ok) {
+    popups.push({
+      x, y,
+      t: 0,
+      dur: 0.85,
+      text: fullWord,
+      ok
+    });
+  }
+
+  function damage() {
+    lives -= 1;
+    // Screen shake
+    shake.time = 0.14;
+    shake.amp = 10;
+
+    if (lives <= 0) gameOver = true;
+  }
+
+  const shake = { time: 0, amp: 0 };
+
+  function shoot(type) {
+    if (gameOver || paused) return;
+    if (player.cooldown > 0) return;
+
+    player.lastWeapon = type;
+    player.cooldown = 0.12; // modern feel: light fire rate limit
+
+    bullets.push({
+      x: player.x,
+      y: player.y - 12,
+      vy: -760,
+      r: 6,
+      type // "j" or "ly"
+    });
+
+    // muzzle particles
+    addParticles(player.x, player.y - 22, 6);
+  }
+
+  // ---------- Controls ----------
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowLeft") keys.left = true;
+    if (e.key === "ArrowRight") keys.right = true;
+
+    const k = e.key.toLowerCase();
+    if (k === "j") shoot("j");
+    if (k === "l") shoot("ly"); // L means LY
+    if (k === "r") reset();
+    if (k === "p") paused = !paused;
+    if (k === " " || k === "spacebar") shoot(player.lastWeapon);
+  });
+
+  window.addEventListener("keyup", (e) => {
+    if (e.key === "ArrowLeft") keys.left = false;
+    if (e.key === "ArrowRight") keys.right = false;
+  });
+
+  // Pointer / touch:
+  // - Dragging near player moves it
+  // - Tap the left button area shoots J, right button area shoots LY
+  let dragging = false;
+  let dragOffsetX = 0;
+
+  canvas.addEventListener("pointerdown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * (W / rect.width);
+    const py = (e.clientY - rect.top) * (H / rect.height);
+
+    if (gameOver) return;
+
+    // Bottom buttons region
+    const btnY = H - 44, btnH = 30;
+    const leftBtn = { x: W/2 - 230, y: btnY, w: 210, h: btnH };
+    const rightBtn = { x: W/2 + 20, y: btnY, w: 210, h: btnH };
+
+    if (py >= btnY && py <= btnY + btnH) {
+      if (px >= leftBtn.x && px <= leftBtn.x + leftBtn.w) shoot("j");
+      if (px >= rightBtn.x && px <= rightBtn.x + rightBtn.w) shoot("ly");
+      return;
+    }
+
+    // Drag the ship (simple)
+    const dx = px - player.x;
+    const dy = py - player.y;
+    if (dx*dx + dy*dy <= (48*48)) {
+      dragging = true;
+      dragOffsetX = px - player.x;
+      canvas.setPointerCapture(e.pointerId);
+    } else {
+      // Tap anywhere else: pick by side (left=J right=LY) for convenience
+      shoot(px < W/2 ? "j" : "ly");
+    }
+  });
+
+  canvas.addEventListener("pointermove", (e) => {
+    if (!dragging) return;
+    const rect = canvas.getBoundingClientRect();
+    const px = (e.clientX - rect.left) * (W / rect.width);
+    player.x = clamp(px - dragOffsetX, 40, W - 40);
+    player.vx = 0;
+  });
+
+  canvas.addEventListener("pointerup", (e) => {
+    dragging = false;
+    try { canvas.releasePointerCapture(e.pointerId); } catch {}
+  });
+
+  // ---------- Loop ----------
+  let last = performance.now();
+  let spawnAccMs = 0;
+
+  function update(dt) {
+    if (paused || gameOver) return;
+
+    time += dt;
+    spawnAccMs += dt * 1000;
+
+    // Difficulty curve: every 12 seconds it ramps
+    const phase = Math.floor(time / 12);
+    baseSpeed = 70 + phase * 12;
+    spawnInterval = clamp(1200 - phase * 80, 620, 1200);
+    maxShips = clamp(2 + Math.floor(phase / 2), 2, 4);
+
+    // Boss roughly every 45s, but avoid repeated trigger
+    if (Math.floor(time) > 0 && Math.floor(time) % 45 === 0) {
+      if (!update._bossLock) {
+        update._bossLock = true;
+        spawnBoss();
+      }
+    } else {
+      update._bossLock = false;
+    }
+
+    // Spawn ships
+    while (spawnAccMs >= spawnInterval) {
+      spawnAccMs -= spawnInterval;
+      spawnShip();
+    }
+
+    // Player move (keyboard, if not dragging)
+    if (!dragging) {
+      const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
+      player.vx += dir * player.speed * dt;
+      player.vx *= player.drag;
+      player.x += player.vx * dt;
+      player.x = clamp(player.x, 40, W - 40);
+    }
+
+    // Cooldown
+    if (player.cooldown > 0) player.cooldown = Math.max(0, player.cooldown - dt);
+
+    // Ships move
+    for (let i = ships.length - 1; i >= 0; i--) {
+      const s = ships[i];
+      if (!s.isBoss) {
+        s.wobble += dt * 2.3;
+        s.x += Math.sin(s.wobble) * dt * 22;
+      } else {
+        s.x += Math.sin(time * 1.1) * dt * 14;
+      }
+
+      s.y += s.speed * dt;
+
+      // Reached bottom => damage
+      if (s.y > H + 60) {
+        ships.splice(i, 1);
+        damage();
+      }
+    }
+
+    // Bullets move
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      bullets[i].y += bullets[i].vy * dt;
+      if (bullets[i].y < -30) bullets.splice(i, 1);
+    }
+
+    // Collisions
+    for (let bi = bullets.length - 1; bi >= 0; bi--) {
+      const b = bullets[bi];
+      for (let si = ships.length - 1; si >= 0; si--) {
+        const s = ships[si];
+        const dx = b.x - s.x;
+        const dy = b.y - s.y;
+        const rr = (b.r + s.radius) * (b.r + s.radius);
+        if (dx*dx + dy*dy <= rr) {
+          // Hit
+          bullets.splice(bi, 1);
+
+          const correct = (b.type === s.word.missing);
+          if (correct) {
+            s.hp -= 1;
+            score += s.isBoss ? 25 : 10;
+
+            shake.time = 0.08;
+            shake.amp = 6;
+
+            addParticles(s.x, s.y, s.isBoss ? 42 : 26);
+            addPopupWord(s.x, s.y, s.word.full, true);
+
+            if (s.hp <= 0) {
+              ships.splice(si, 1);
+              score += s.isBoss ? 40 : 0;
+
+              if (s.isBoss) {
+                lives = Math.min(3, lives + 1);
+                popups.push({ t: 0, dur: 1.0, text: "BOSS LEGYOZVE!", sub: "+1 élet (max 3)" });
+              }
+            } else if (s.isBoss) {
+              // Boss changes word each correct hit (keeps LY only)
+              const lyWords = WORDS.filter(w => w.missing === "ly");
+              s.word = lyWords[Math.floor(Math.random() * lyWords.length)];
+            }
+          } else {
+            // Wrong => take damage, word returns later
+            damage();
+            retryQueue.push(s.word);
+
+            addParticles(s.x, s.y, 18);
+            addPopupWord(s.x, s.y, s.word.full, false);
+          }
+          break;
+        }
+      }
+    }
+
+    // Particles
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i];
+      p.t += dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vx *= 0.92;
+      p.vy *= 0.92;
+      if (p.t >= p.dur) particles.splice(i, 1);
+    }
+
+    // Popups (texts)
+    for (let i = popups.length - 1; i >= 0; i--) {
+      popups[i].t += dt;
+      if (popups[i].t >= popups[i].dur) popups.splice(i, 1);
+    }
+
+    // Screen shake decay
+    if (shake.time > 0) shake.time = Math.max(0, shake.time - dt);
+  }
+
+  // ---------- Render ----------
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // screen shake
+    const sx = shake.time > 0 ? rand(-shake.amp, shake.amp) : 0;
+    const sy = shake.time > 0 ? rand(-shake.amp, shake.amp) : 0;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    drawStars();
+    drawHUD();
+    drawShips();
+    drawBullets();
+    drawParticles();
+    drawPlayer();
+    drawButtons();
+    drawPopups();
+
+    ctx.restore();
+
+    if (gameOver) drawGameOver();
+  }
+
+  function drawStars() {
+    // Lightweight parallax-ish stars (no heavy loops)
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    for (let i = 0; i < 80; i++) {
+      const x = (i * 113) % W;
+      const y = (i * 71 + (time * 40)) % H;
+      ctx.fillRect(x, y, 2, 2);
+    }
+    ctx.restore();
+  }
+
+  function drawHUD() {
+    ctx.save();
+    ctx.fillStyle = "rgba(232,238,252,0.95)";
+    ctx.font = "16px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillText(`Pont: ${score}`, 18, 28);
+    ctx.fillText(`Élet: ${"❤".repeat(lives)}${"·".repeat(3 - lives)}`, 18, 52);
+
+    ctx.fillStyle = "rgba(232,238,252,0.75)";
+    ctx.font = "13px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.fillText(`Fegyver: ${player.lastWeapon.toUpperCase()} (Space = ismétlés)`, 18, 74);
+
+    if (paused) {
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      ctx.font = "28px system-ui";
+      ctx.fillText("Szünet (P)", W/2 - 78, H/2);
+    }
+    ctx.restore();
+  }
+
+  function drawPlayer() {
+    // ship body
+    ctx.save();
+    ctx.translate(player.x, player.y);
+
+    // glow
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = "rgba(120,190,255,1)";
+    ctx.beginPath();
+    ctx.arc(0, 0, 34, 0, Math.PI * 2);
+    ctx.fill();
+
+    // core
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "rgba(255,255,255,0.14)";
+    ctx.beginPath();
+    ctx.arc(0, 0, 24, 0, Math.PI * 2);
+    ctx.fill();
+
+    // triangle
+    ctx.fillStyle = "rgba(255,255,255,0.42)";
+    ctx.beginPath();
+    ctx.moveTo(-18, 12);
+    ctx.lineTo(0, -22);
+    ctx.lineTo(18, 12);
+    ctx.closePath();
+    ctx.fill();
+
+    // engine flame
+    ctx.globalAlpha = 0.65;
+    ctx.fillStyle = "rgba(255,180,90,1)";
+    ctx.beginPath();
+    ctx.ellipse(0, 20, 7, 14, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  function drawShips() {
+    for (const s of ships) {
+      ctx.save();
+      ctx.translate(s.x, s.y);
+
+      const isBoss = s.isBoss;
+      ctx.fillStyle = isBoss ? "rgba(255,170,90,0.14)" : "rgba(255,255,255,0.10)";
+      ctx.beginPath();
+      ctx.arc(0, 0, s.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = isBoss ? "rgba(255,170,90,0.55)" : "rgba(255,255,255,0.22)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(0, 0, s.radius, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // word
+      ctx.fillStyle = "rgba(232,238,252,0.98)";
+      ctx.font = isBoss ? "22px system-ui" : "20px system-ui";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(s.word.masked, 0, 1);
+
+      if (isBoss) {
+        // HP pips
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = "rgba(232,238,252,0.8)";
+        ctx.font = "12px system-ui";
+        ctx.fillText(`HP: ${s.hp}`, 0, s.radius + 15);
+      }
+
+      ctx.restore();
+    }
+  }
+
+  function drawBullets() {
+    for (const b of bullets) {
+      ctx.save();
+      ctx.translate(b.x, b.y);
+
+      // trail
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = (b.type === "j") ? "rgba(90,140,255,1)" : "rgba(210,120,255,1)";
+      ctx.fillRect(-2, 0, 4, 18);
+
+      // head
+      ctx.globalAlpha = 0.95;
+      ctx.beginPath();
+      ctx.arc(0, 0, b.r, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    }
+  }
+
+  function drawParticles() {
+    for (const p of particles) {
+      const a = 1 - (p.t / p.dur);
+      ctx.save();
+      ctx.globalAlpha = a;
+      ctx.fillStyle = p.kind === "warm" ? "rgba(255,220,140,1)" : "rgba(255,120,120,1)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  function drawButtons() {
+    const btnY = H - 44, btnH = 30;
+    const leftBtn = { x: W/2 - 230, y: btnY, w: 210, h: btnH };
+    const rightBtn = { x: W/2 + 20, y: btnY, w: 210, h: btnH };
+
+    ctx.save();
+    // left
+    ctx.fillStyle = "rgba(90,140,255,0.18)";
+    roundRect(leftBtn.x, leftBtn.y, leftBtn.w, leftBtn.h, 12);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(90,140,255,0.38)";
+    ctx.lineWidth = 1;
+    roundRect(leftBtn.x, leftBtn.y, leftBtn.w, leftBtn.h, 12);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(232,238,252,0.95)";
+    ctx.font = "14px system-ui";
+    ctx.fillText("J-lézer (J)", leftBtn.x + 18, leftBtn.y + 20);
+
+    // right
+    ctx.fillStyle = "rgba(210,120,255,0.18)";
+    roundRect(rightBtn.x, rightBtn.y, rightBtn.w, rightBtn.h, 12);
+    ctx.fill();
+    ctx.strokeStyle = "rgba(210,120,255,0.40)";
+    ctx.lineWidth = 1;
+    roundRect(rightBtn.x, rightBtn.y, rightBtn.w, rightBtn.h, 12);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(232,238,252,0.95)";
+    ctx.fillText("LY-plazma (L)", rightBtn.x + 18, rightBtn.y + 20);
+
+    ctx.restore();
+  }
+
+  function drawPopups() {
+    for (const p of popups) {
+      // Two popup types:
+      // 1) word popup: has x,y
+      // 2) center banner: only text/sub
+      if (typeof p.x === "number") {
+        const prog = p.t / p.dur;
+        const y = p.y - 18 - prog * 26;
+        ctx.save();
+        ctx.globalAlpha = 1 - prog;
+        ctx.textAlign = "center";
+        ctx.font = "16px system-ui";
+        ctx.fillStyle = p.ok ? "rgba(160,255,190,0.95)" : "rgba(255,170,170,0.95)";
+        ctx.fillText(p.text, p.x, y);
+        ctx.restore();
+      } else {
+        const prog = p.t / p.dur;
+        ctx.save();
+        ctx.globalAlpha = 1 - prog;
+        ctx.textAlign = "center";
+        ctx.fillStyle = "rgba(0,0,0,0.30)";
+        roundRect(W/2 - 210, 90, 420, 64, 14);
+        ctx.fill();
+
+        ctx.fillStyle = "rgba(255,255,255,0.95)";
+        ctx.font = "18px system-ui";
+        ctx.fillText(p.text, W/2, 118);
+
+        if (p.sub) {
+          ctx.fillStyle = "rgba(255,255,255,0.78)";
+          ctx.font = "13px system-ui";
+          ctx.fillText(p.sub, W/2, 140);
+        }
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawGameOver() {
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,0.58)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.textAlign = "center";
+    ctx.font = "44px system-ui";
+    ctx.fillText("GAME OVER", W/2, H/2 - 30);
+
+    ctx.font = "18px system-ui";
+    ctx.fillText(`Pontszám: ${score}`, W/2, H/2 + 10);
+    ctx.fillStyle = "rgba(255,255,255,0.82)";
+    ctx.fillText("Nyomj R-t az újraindításhoz", W/2, H/2 + 42);
+    ctx.restore();
+  }
+
+  function roundRect(x, y, w, h, r) {
+    const rr = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  // ---------- Reset / Loop ----------
+  function reset() {
+    score = 0;
+    lives = 3;
+    time = 0;
+    gameOver = false;
+    paused = false;
+
+    ships.length = 0;
+    bullets.length = 0;
+    particles.length = 0;
+    popups.length = 0;
+    retryQueue.length = 0;
+
+    spawnInterval = 1200;
+    baseSpeed = 70;
+    maxShips = 2;
+    player.x = W/2;
+    player.vx = 0;
+    player.cooldown = 0;
+    player.lastWeapon = "j";
+
+    // Start wave
+    spawnShip();
+    popups.push({ t: 0, dur: 1.0, text: "BETŰVADÁSZ", sub: "Lőj: J vagy LY (L)" });
+  }
+
+  function loop(now) {
+    const dt = Math.min(0.033, (now - last) / 1000);
+    last = now;
+    update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  reset();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
