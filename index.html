@@ -34,8 +34,8 @@
   <div class="panel">
     <canvas id="game" width="920" height="560" aria-label="Betűvadász játék"></canvas>
     <div class="hint">
-      <div class="pill">Mozgás: <kbd>←</kbd> <kbd>→</kbd> | Lőj: <kbd>J</kbd> vagy <kbd>L</kbd> (LY)</div>
-      <div class="pill">Mobil: húzd az űrhajót, lőj a képernyő alján lévő gombokkal</div>
+      <div class="pill">Az űrhajó középen halad | Lőj: <kbd>J</kbd> vagy <kbd>L</kbd> (LY)</div>
+      <div class="pill">Mobil: lőj a képernyő alján lévő gombokkal</div>
       <div class="pill">Újraindítás: <kbd>R</kbd> | Szünet: <kbd>P</kbd></div>
     </div>
   </div>
@@ -49,36 +49,46 @@
   const W = canvas.width, H = canvas.height;
 
   // Word bank: only words where the missing chunk is exactly "j" or "ly" in one place.
-  // Mask uses "_" for that missing chunk.
   const WORDS = [
     // J
-    { full: "játék", missing: "j", masked: "_áték" },
-    { full: "jó", missing: "j", masked: "_ó" },
-    { full: "juh", missing: "j", masked: "_uh" },
-    { full: "jég", missing: "j", masked: "_ég" },
-    { full: "jár", missing: "j", masked: "_ár" },
-    { full: "jel", missing: "j", masked: "_el" },
-    { full: "jön", missing: "j", masked: "_ön" },
-    { full: "kaja", missing: "j", masked: "ka_a" },
-    { full: "fajta", missing: "j", masked: "fa_ta" },
-    { full: "hajó", missing: "j", masked: "ha_ó" },
+    { full: "játék", missing: "j" },
+    { full: "jó", missing: "j" },
+    { full: "juh", missing: "j" },
+    { full: "jég", missing: "j" },
+    { full: "jár", missing: "j" },
+    { full: "jel", missing: "j" },
+    { full: "jön", missing: "j" },
+    { full: "kaja", missing: "j" },
+    { full: "fajta", missing: "j" },
+    { full: "hajó", missing: "j" },
 
     // LY
-    { full: "lyuk", missing: "ly", masked: "_uk" },
-    { full: "golyó", missing: "ly", masked: "go_ó" },
-    { full: "hely", missing: "ly", masked: "he_" },
-    { full: "folyó", missing: "ly", masked: "fo_ó" },
-    { full: "pálya", missing: "ly", masked: "pá_a" },
-    { full: "gólya", missing: "ly", masked: "gó_a" },
-    { full: "pehely", missing: "ly", masked: "pehe_" },
-    { full: "súly", missing: "ly", masked: "sú_" },
-    { full: "olyan", missing: "ly", masked: "o_an" },
-    { full: "bólya", missing: "ly", masked: "bó_a" },
+    { full: "lyuk", missing: "ly" },
+    { full: "golyó", missing: "ly" },
+    { full: "hely", missing: "ly" },
+    { full: "folyó", missing: "ly" },
+    { full: "pálya", missing: "ly" },
+    { full: "gólya", missing: "ly" },
+    { full: "pehely", missing: "ly" },
+    { full: "súly", missing: "ly" },
+    { full: "olyan", missing: "ly" },
+    { full: "bólya", missing: "ly" },
   ];
 
   // ---------- Utility ----------
   const rand = (min, max) => Math.random() * (max - min) + min;
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const SLOT = "⟦⚡⟧";
+
+  function buildMaskedWord(full, missing) {
+    const idx = full.indexOf(missing);
+    if (idx === -1) return full;
+    return `${full.slice(0, idx)}${SLOT}${full.slice(idx + missing.length)}`;
+  }
+
+  WORDS.forEach((word) => {
+    word.masked = buildMaskedWord(word.full, word.missing);
+  });
 
   // ---------- Game state ----------
   let score = 0;
@@ -90,13 +100,10 @@
   // Difficulty ramps
   let spawnInterval = 1200;  // ms
   let baseSpeed = 70;        // px/s
-  let maxShips = 2;
-
-  // Adaptive: wrong words return
-  const retryQueue = [];
+  let maxObstacles = 2;
 
   // Entities
-  const ships = [];
+  const obstacles = [];
   const bullets = [];
   const particles = [];
   const popups = [];
@@ -104,60 +111,33 @@
   // Player
   const player = {
     x: W / 2,
-    y: H - 62,
-    vx: 0,
-    speed: 1640,      // acceleration feel
-    drag: 0.9,
+    y: H / 2,
     radius: 18,
     cooldown: 0,
     lastWeapon: "j",
   };
 
-  // Input
-  const keys = { left: false, right: false };
-
   function pickWord() {
-    if (retryQueue.length && Math.random() < 0.35) return retryQueue.shift();
     return WORDS[Math.floor(Math.random() * WORDS.length)];
   }
 
-  function spawnShip() {
-    if (ships.length >= maxShips) return;
+  function spawnObstacle() {
+    if (obstacles.length >= maxObstacles) return;
 
     const w = pickWord();
     const x = rand(120, W - 120);
     const y = -40;
 
-    ships.push({
+    obstacles.push({
       x, y,
       speed: baseSpeed * rand(0.95, 1.35),
       radius: 28,
       wobble: rand(0, Math.PI * 2),
       word: w,
-      hp: 1,
-      isBoss: false,
+      slotCharge: null,
+      completed: false,
+      revealTimer: 0,
     });
-  }
-
-  function spawnBoss() {
-    // Simple boss: LY-only, 3 hits
-    const lyWords = WORDS.filter(w => w.missing === "ly");
-    const w = lyWords[Math.floor(Math.random() * lyWords.length)];
-
-    ships.length = 0;
-    bullets.length = 0;
-
-    ships.push({
-      x: W / 2, y: -80,
-      speed: baseSpeed * 0.85,
-      radius: 46,
-      wobble: 0,
-      word: w,
-      hp: 3,
-      isBoss: true,
-    });
-
-    popups.push({ t: 0, dur: 1.2, text: "BOSS: LY-LORD", sub: "Csak LY-os szavak!" });
   }
 
   function addParticles(x, y, intensity = 18) {
@@ -218,9 +198,6 @@
 
   // ---------- Controls ----------
   window.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowLeft") keys.left = true;
-    if (e.key === "ArrowRight") keys.right = true;
-
     const k = e.key.toLowerCase();
     if (k === "j") shoot("j");
     if (k === "l") shoot("ly"); // L means LY
@@ -229,16 +206,8 @@
     if (k === " " || k === "spacebar") shoot(player.lastWeapon);
   });
 
-  window.addEventListener("keyup", (e) => {
-    if (e.key === "ArrowLeft") keys.left = false;
-    if (e.key === "ArrowRight") keys.right = false;
-  });
-
   // Pointer / touch:
-  // - Dragging near player moves it
   // - Tap the left button area shoots J, right button area shoots LY
-  let dragging = false;
-  let dragOffsetX = 0;
 
   canvas.addEventListener("pointerdown", (e) => {
     const rect = canvas.getBoundingClientRect();
@@ -258,30 +227,8 @@
       return;
     }
 
-    // Drag the ship (simple)
-    const dx = px - player.x;
-    const dy = py - player.y;
-    if (dx*dx + dy*dy <= (64*64)) {
-      dragging = true;
-      dragOffsetX = px - player.x;
-      canvas.setPointerCapture(e.pointerId);
-    } else {
-      // Tap anywhere else: pick by side (left=J right=LY) for convenience
-      shoot(px < W/2 ? "j" : "ly");
-    }
-  });
-
-  canvas.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
-    const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) * (W / rect.width);
-    player.x = clamp(px - dragOffsetX, 40, W - 40);
-    player.vx = 0;
-  });
-
-  canvas.addEventListener("pointerup", (e) => {
-    dragging = false;
-    try { canvas.releasePointerCapture(e.pointerId); } catch {}
+    // Tap anywhere else: pick by side (left=J right=LY) for convenience
+    shoot(px < W/2 ? "j" : "ly");
   });
 
   // ---------- Loop ----------
@@ -298,51 +245,35 @@
     const phase = Math.floor(time / 12);
     baseSpeed = 70 + phase * 12;
     spawnInterval = clamp(1200 - phase * 80, 620, 1200);
-    maxShips = clamp(2 + Math.floor(phase / 2), 2, 4);
+    maxObstacles = clamp(2 + Math.floor(phase / 2), 2, 4);
 
-    // Boss roughly every 45s, but avoid repeated trigger
-    if (Math.floor(time) > 0 && Math.floor(time) % 45 === 0) {
-      if (!update._bossLock) {
-        update._bossLock = true;
-        spawnBoss();
-      }
-    } else {
-      update._bossLock = false;
-    }
-
-    // Spawn ships
+    // Spawn obstacles
     while (spawnAccMs >= spawnInterval) {
       spawnAccMs -= spawnInterval;
-      spawnShip();
-    }
-
-    // Player move (keyboard, if not dragging)
-    if (!dragging) {
-      const dir = (keys.right ? 1 : 0) - (keys.left ? 1 : 0);
-      player.vx += dir * player.speed * dt;
-      player.vx *= player.drag;
-      player.x += player.vx * dt;
-      player.x = clamp(player.x, 40, W - 40);
+      spawnObstacle();
     }
 
     // Cooldown
     if (player.cooldown > 0) player.cooldown = Math.max(0, player.cooldown - dt);
 
-    // Ships move
-    for (let i = ships.length - 1; i >= 0; i--) {
-      const s = ships[i];
-      if (!s.isBoss) {
-        s.wobble += dt * 2.3;
-        s.x += Math.sin(s.wobble) * dt * 22;
-      } else {
-        s.x += Math.sin(time * 1.1) * dt * 14;
-      }
-
+    // Obstacles move (forward scroll)
+    for (let i = obstacles.length - 1; i >= 0; i--) {
+      const s = obstacles[i];
+      s.wobble += dt * 2.1;
+      s.x += Math.sin(s.wobble) * dt * 18;
       s.y += s.speed * dt;
 
-      // Reached bottom => damage
-      if (s.y > H + 60) {
-        ships.splice(i, 1);
+      if (s.completed) {
+        s.revealTimer = Math.max(0, s.revealTimer - dt);
+        if (s.revealTimer <= 0) {
+          obstacles.splice(i, 1);
+          continue;
+        }
+      }
+
+      // Reached player lane => damage
+      if (!s.completed && s.y > player.y + 40) {
+        obstacles.splice(i, 1);
         damage();
       }
     }
@@ -356,8 +287,9 @@
     // Collisions
     for (let bi = bullets.length - 1; bi >= 0; bi--) {
       const b = bullets[bi];
-      for (let si = ships.length - 1; si >= 0; si--) {
-        const s = ships[si];
+      for (let si = obstacles.length - 1; si >= 0; si--) {
+        const s = obstacles[si];
+        if (s.completed) continue;
         const dx = b.x - s.x;
         const dy = b.y - s.y;
         const rr = (b.r + s.radius) * (b.r + s.radius);
@@ -367,35 +299,23 @@
 
           const correct = (b.type === s.word.missing);
           if (correct) {
-            s.hp -= 1;
-            score += s.isBoss ? 25 : 10;
+            score += 12;
+            s.completed = true;
+            s.revealTimer = 0.35;
 
             shake.time = 0.08;
             shake.amp = 6;
 
-            addParticles(s.x, s.y, s.isBoss ? 42 : 26);
+            addParticles(s.x, s.y, 26);
             addPopupWord(s.x, s.y, s.word.full, true);
-
-            if (s.hp <= 0) {
-              ships.splice(si, 1);
-              score += s.isBoss ? 40 : 0;
-
-              if (s.isBoss) {
-                lives = Math.min(3, lives + 1);
-                popups.push({ t: 0, dur: 1.0, text: "BOSS LEGYOZVE!", sub: "+1 élet (max 3)" });
-              }
-            } else if (s.isBoss) {
-              // Boss changes word each correct hit (keeps LY only)
-              const lyWords = WORDS.filter(w => w.missing === "ly");
-              s.word = lyWords[Math.floor(Math.random() * lyWords.length)];
-            }
           } else {
-            // Wrong => take damage, word returns later
-            damage();
-            retryQueue.push(s.word);
+            // Wrong energy => slot flickers but stays empty
+            s.slotCharge = b.type;
+            shake.time = 0.05;
+            shake.amp = 4;
 
             addParticles(s.x, s.y, 18);
-            addPopupWord(s.x, s.y, s.word.full, false);
+            addPopupWord(s.x, s.y, s.word.masked, false);
           }
           break;
         }
@@ -436,7 +356,7 @@
 
     drawStars();
     drawHUD();
-    drawShips();
+    drawObstacles();
     drawBullets();
     drawParticles();
     drawPlayer();
@@ -518,18 +438,22 @@
     ctx.restore();
   }
 
-  function drawShips() {
-    for (const s of ships) {
+  function drawObstacles() {
+    for (const s of obstacles) {
       ctx.save();
       ctx.translate(s.x, s.y);
 
-      const isBoss = s.isBoss;
-      ctx.fillStyle = isBoss ? "rgba(255,170,90,0.14)" : "rgba(255,255,255,0.10)";
+      const charged = s.slotCharge && !s.completed;
+      ctx.fillStyle = charged ? "rgba(130,150,255,0.16)" : "rgba(255,255,255,0.10)";
       ctx.beginPath();
       ctx.arc(0, 0, s.radius, 0, Math.PI * 2);
       ctx.fill();
 
-      ctx.strokeStyle = isBoss ? "rgba(255,170,90,0.55)" : "rgba(255,255,255,0.22)";
+      if (charged) {
+        ctx.strokeStyle = s.slotCharge === "j" ? "rgba(90,140,255,0.6)" : "rgba(210,120,255,0.6)";
+      } else {
+        ctx.strokeStyle = "rgba(255,255,255,0.22)";
+      }
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(0, 0, s.radius, 0, Math.PI * 2);
@@ -537,18 +461,10 @@
 
       // word
       ctx.fillStyle = "rgba(232,238,252,0.98)";
-      ctx.font = isBoss ? "22px system-ui" : "20px system-ui";
+      ctx.font = "20px system-ui";
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(s.word.masked, 0, 1);
-
-      if (isBoss) {
-        // HP pips
-        ctx.globalAlpha = 0.9;
-        ctx.fillStyle = "rgba(232,238,252,0.8)";
-        ctx.font = "12px system-ui";
-        ctx.fillText(`HP: ${s.hp}`, 0, s.radius + 15);
-      }
+      ctx.fillText(s.completed ? s.word.full : s.word.masked, 0, 1);
 
       ctx.restore();
     }
@@ -695,23 +611,22 @@
     gameOver = false;
     paused = false;
 
-    ships.length = 0;
+    obstacles.length = 0;
     bullets.length = 0;
     particles.length = 0;
     popups.length = 0;
-    retryQueue.length = 0;
 
     spawnInterval = 1200;
     baseSpeed = 70;
-    maxShips = 2;
+    maxObstacles = 2;
     player.x = W/2;
-    player.vx = 0;
+    player.y = H/2;
     player.cooldown = 0;
     player.lastWeapon = "j";
 
     // Start wave
-    spawnShip();
-    popups.push({ t: 0, dur: 1.0, text: "BETŰVADÁSZ", sub: "Lőj: J vagy LY (L)" });
+    spawnObstacle();
+    popups.push({ t: 0, dur: 1.0, text: "SZÓFUTAM", sub: "Töltsd fel az energiaslottot J/LY lövéssel!" });
   }
 
   function loop(now) {
